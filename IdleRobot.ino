@@ -6,8 +6,7 @@
 
 #define LIGHT_SENSOR_PIN A6
 #define BATTERY_PIN A3
-#define DEBUG_PIN_1 2
-#define DEBUG_PIN_2 3
+#define DEBUG_PIN 2
 #define LED_PIN 4
 #define TURN_OFF_CHARGE 0.2
 #define TURN_ON_CHARGE 0.4
@@ -17,14 +16,12 @@
 #define BATTERY_VOLTAGE_1 4.2
 
 #define ERR_NO_BATTERY_VOLTAGE_READING  0x01
-#define ERR_DEBUG_PIN_1_ALWAYS_ON       0x02
-#define ERR_DEBUG_PIN_2_ALWAYS_ON       0x04
+
+#define MAX(a, b, c) ((a > b && a > c) ? a : (b > c ? b : c))
 
 const uint32_t EEPROM_SETTINGS_KEY = 0x5acc0dd1;
 
 Adafruit_SSD1306 display(128, 64, &Wire, -1);
-
-#define MAX(a, b, c) ((a > b && a > c) ? a : (b > c ? b : c))
 
 template<int L0, int L1, int L2>
 class SmallNN
@@ -76,8 +73,6 @@ CircularVector<SmallFloat<0, 1>> lightLevel(10);
 CircularVector<SmallFloat<0, 1>> hourChargeLevel(48);
 float prevDayAvgCharge = 0;
 float currDayAvgCharge = 0;
-BoolCircularVector hourDebugPin1State(24), hourDebugPin2State(24);
-uint32_t cyclesSinceDebugPin1On = 0, cyclesSinceDebugPin2On = 0;
 bool prevDebugOn = false;
 
 bool debugPinOk(const BoolCircularVector &v) {
@@ -119,19 +114,6 @@ void saveSettings() {
     offset += sizeof(hourChargeLevel[i].m_data);
   }
 
-  EEPROM.put(offset, hourDebugPin1State.sz);
-  offset += sizeof(hourDebugPin1State.sz);
-  for (uint8_t i = 0; i < ceil(static_cast<float>(hourDebugPin1State.capacity) / 8); ++i) {
-    EEPROM.put(offset, hourDebugPin1State.data[i]);
-    offset += sizeof(hourDebugPin1State.data[i]);
-  }
-  EEPROM.put(offset, hourDebugPin2State.sz);
-  offset += sizeof(hourDebugPin2State.sz);
-  for (uint8_t i = 0; i < ceil(static_cast<float>(hourDebugPin2State.capacity) / 8); ++i) {
-    EEPROM.put(offset, hourDebugPin2State.data[i]);
-    offset += sizeof(hourDebugPin2State.data[i]);
-  }
-
   EEPROM.put(offset, energySaving);
 }
 
@@ -157,19 +139,6 @@ void readSettings() {
       offset += sizeof(charge.m_data);
     }
 
-    EEPROM.get(offset, hourDebugPin1State.sz);
-    offset += sizeof(hourDebugPin1State.sz);
-    for (uint8_t i = 0; i < ceil(static_cast<float>(hourDebugPin1State.capacity) / 8); ++i) {
-      EEPROM.get(offset, hourDebugPin1State.data[i]);
-      offset += sizeof(hourDebugPin1State.data[i]);
-    }
-    EEPROM.get(offset, hourDebugPin2State.sz);
-    offset += sizeof(hourDebugPin2State.sz);
-    for (uint8_t i = 0; i < ceil(static_cast<float>(hourDebugPin2State.capacity) / 8); ++i) {
-      EEPROM.get(offset, hourDebugPin2State.data[i]);
-      offset += sizeof(hourDebugPin2State.data[i]);
-    }
-
     EEPROM.get(offset, energySaving);
   }
 }
@@ -189,8 +158,7 @@ void setup() {
   analogReference(DEFAULT);
   pinMode(LIGHT_SENSOR_PIN, INPUT);
   pinMode(BATTERY_PIN, INPUT);
-  pinMode(DEBUG_PIN_1, INPUT_PULLUP);
-  pinMode(DEBUG_PIN_2, INPUT_PULLUP);
+  pinMode(DEBUG_PIN, INPUT_PULLUP);
   pinMode(LED_PIN, OUTPUT);
 
   if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
@@ -286,10 +254,6 @@ void render(float lightLevel, bool debugMode, uint8_t errorCodes) {
 
       if (errorCodes & ERR_NO_BATTERY_VOLTAGE_READING)
         display.println(F("<ERR> Unknown batt. V"));
-      if (errorCodes & ERR_DEBUG_PIN_1_ALWAYS_ON)
-        display.println(F("<ERR> Dbg 1 always on"));
-      if (errorCodes & ERR_DEBUG_PIN_2_ALWAYS_ON)
-        display.println(F("<ERR> Dbg 2 always on"));
     }
     else {
       brains.inputs[0] = lightLevel;
@@ -372,26 +336,7 @@ void updateAvgCharge() {
 
 void loop() {
   uint8_t errorCodes = 0;
-
-  bool debugMode = false;
-  bool debugPin1 = digitalRead(DEBUG_PIN_1) == LOW;
-  bool debugPin2 = digitalRead(DEBUG_PIN_2) == LOW;
-  if (debugPin1)
-    cyclesSinceDebugPin1On = 0;
-  else
-    cyclesSinceDebugPin1On++;
-  if (debugPin2)
-    cyclesSinceDebugPin2On = 0;
-  else
-    cyclesSinceDebugPin2On++;
-  if (debugPinOk(hourDebugPin1State))
-    debugMode = debugMode || debugPin1;
-  else
-    errorCodes = errorCodes | ERR_DEBUG_PIN_1_ALWAYS_ON;
-  if (debugPinOk(hourDebugPin2State))
-    debugMode = debugMode || debugPin2;
-  else
-    errorCodes = errorCodes | ERR_DEBUG_PIN_2_ALWAYS_ON;
+  bool debugMode = digitalRead(DEBUG_PIN) == LOW;
 
   //light level from 0 (no light) to 1 (max light)
   lightLevel.push(max(0, 700 - analogRead(LIGHT_SENSOR_PIN)) / 700.0);
@@ -407,8 +352,6 @@ void loop() {
   if (cyclesTotal % 450 == 0) {
     hourChargeLevel.push(average(chargeLevel));
     updateAvgCharge();
-    hourDebugPin1State.push(cyclesSinceDebugPin1On < 450);
-    hourDebugPin2State.push(cyclesSinceDebugPin2On < 450);
   }
 
   if ((debugMode && !prevDebugOn) || (!debugMode && prevDebugOn)) {
