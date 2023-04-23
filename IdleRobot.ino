@@ -323,9 +323,25 @@ void updateAvgCharge() {
   }
 }
 
+void wakeUp()
+{
+  
+}
+
 void loop() {
   uint8_t errorCodes = 0;
   bool debugMode = digitalRead(DEBUG_PIN) == LOW;
+
+  if ((debugMode && !prevDebugOn) || (!debugMode && prevDebugOn)) {
+    if (!screenOn) {
+      digitalWrite(LED_PIN, LOW);
+      delay(250);
+    }
+    digitalWrite(LED_PIN, HIGH);
+    delay(250);
+    digitalWrite(LED_PIN, LOW);
+  }
+  prevDebugOn = debugMode;
 
   //light level from 0 (no light) to 1 (max light)
   lightLevel.push(max(0, 700 - analogRead(LIGHT_SENSOR_PIN)) / 700.0);
@@ -343,21 +359,14 @@ void loop() {
     updateAvgCharge();
   }
 
-  if ((debugMode && !prevDebugOn) || (!debugMode && prevDebugOn)) {
-    digitalWrite(LED_PIN, LOW);
-    delay(250);
-    digitalWrite(LED_PIN, HIGH);
-    delay(250);
-    digitalWrite(LED_PIN, LOW);
-  }
-  prevDebugOn = debugMode;
-
   render(average(lightLevel), debugMode, errorCodes);
 
   cycles++;
   cyclesTotal++;
   if (cyclesTotal % CYCLES_IN_HOUR == 0)
     saveSettings();
-
+  
+  attachInterrupt(digitalPinToInterrupt(DEBUG_PIN), wakeUp, FALLING);
   LowPower.powerDown(SLEEP_8S, ADC_OFF, BOD_ON);
+  detachInterrupt(digitalPinToInterrupt(DEBUG_PIN)); 
 }
