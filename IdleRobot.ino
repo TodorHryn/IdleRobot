@@ -3,61 +3,28 @@
 #include <EEPROM.h>
 #include "CircularVector.hpp"
 #include "SmallFloat.h"
+#include "SmallNN.h"
 
 #define LIGHT_SENSOR_PIN A6
 #define BATTERY_PIN A3
 #define DEBUG_PIN 2
 #define LED_PIN 4
-#define TURN_OFF_CHARGE 0.2
-#define TURN_ON_CHARGE 0.4
+#define TURN_OFF_CHARGE 0.2f
+#define TURN_ON_CHARGE 0.4f
 
-#define ADC_REF_VOLTAGE 4.34
-#define BATTERY_VOLTAGE_0 3.4
-#define BATTERY_VOLTAGE_1 4.2
+#define NN_EMOTION_OK_VALUE -1/3.0f
+#define NN_EMOTION_HAPPY_VALUE 1/3.0f
+#define NN_EYES_OPEN_VALUE 0.5f
+
+#define ADC_REF_VOLTAGE 4.34f
+#define BATTERY_VOLTAGE_0 3.4f
+#define BATTERY_VOLTAGE_1 4.2f
 
 #define ERR_NO_BATTERY_VOLTAGE_READING  0x01
-
-#define MAX(a, b, c) ((a > b && a > c) ? a : (b > c ? b : c))
 
 const uint32_t EEPROM_SETTINGS_KEY = 0x5acc0dd1;
 
 Adafruit_SSD1306 display(128, 64, &Wire, -1);
-
-template<int L0, int L1, int L2>
-class SmallNN
-{
-public:
-  float toFloat(uint8_t val)
-  {
-    return static_cast<float>(val) / UINT8_MAX * (maxv - minv) + minv;
-  }
-
-  void runLayer(uint8_t size, uint8_t prevSize, uint8_t *w, uint8_t *a)
-  {
-    for (uint8_t j = 0; j < size; ++j)
-    {
-      float sum = toFloat(a[j]);
-      for (uint8_t k = 0; k < prevSize; ++k)
-        sum += inputs[k] * toFloat(w[j * prevSize + k]);
-      outputs[j] = tanh(sum);
-    }
-
-    memcpy(inputs, outputs, sizeof(inputs));
-  }
-
-  void run()
-  {
-    runLayer(L1, L0, &w1[0][0], a1);
-    runLayer(L2, L1, &w2[0][0], a2);
-  }
-  
-  float minv = 1e9, maxv = -1e9;
-  float inputs[MAX(L0, L1, L2)], outputs[MAX(L0, L1, L2)];
-  uint8_t w1[L1][L0];
-  uint8_t w2[L2][L1];
-  uint8_t a1[L1];
-  uint8_t a2[L2];
-};
 
 uint8_t brainsBin[] =  {41, 168, 152, 192, 30, 137, 23, 64, 131, 191, 207, 29, 254, 127, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 154, 145, 198, 1, 0, 0, 0, 0, 250, 75, 247, 127, 0, 0, 0, 176, 2, 0, 0, 0, 0, 0, 172, 86, 51, 168, 173, 186, 0, 8, 55, 122, 193, 153, 138, 173, 146, 73, 102, 130, 220, 117, 140, 125, 136, 146, 145, 231, 147, 173, 171, 158, 195, 170, 178, 143, 121, 143, 255, 157, 226, 187, 118, 161, 185, 177, 152, 0, 100, 0};
 SmallNN<2, 7, 3> &brains = *((SmallNN<2, 7, 3>*) brainsBin);
@@ -74,16 +41,6 @@ CircularVector<SmallFloat<0, 1>> hourChargeLevel(48);
 float prevDayAvgCharge = 0;
 float currDayAvgCharge = 0;
 bool prevDebugOn = false;
-
-bool debugPinOk(const BoolCircularVector &v) {
-  if (v.size() < 8)
-    return true;
-  uint8_t countOn = 0;
-  for (uint8_t i = 0; i < v.size(); ++i)
-    if (v.get(i))
-      countOn++;
-  return countOn * 3 < v.size();
-}
 
 template<uint16_t FROM, uint16_t TO>
 float average(const CircularVector<SmallFloat<FROM, TO>> &v) {
@@ -144,6 +101,7 @@ void readSettings() {
 }
 
 void setup() {
+  //Clock to 8 Mhz
   CLKPR = 0x80;
   CLKPR = 0x01;
 
@@ -160,8 +118,10 @@ void setup() {
   pinMode(BATTERY_PIN, INPUT);
   pinMode(DEBUG_PIN, INPUT_PULLUP);
   pinMode(LED_PIN, OUTPUT);
-
+  
+  digitalWrite(LED_PIN, LOW);
   if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+    digitalWrite(LED_PIN, HIGH);
     for (;;);
   }
 
@@ -263,7 +223,7 @@ void render(float lightLevel, bool debugMode, uint8_t errorCodes) {
       // ***** Mouth *****
       display.drawFastHLine(55, 63, 18, SSD1306_WHITE);
 
-      if (brains.outputs[1] >= -1/3.0f) {
+      if (brains.outputs[1] >= NN_EMOTION_OK_VALUE) {
         display.drawPixel(53, 62, SSD1306_WHITE);
         display.drawPixel(54, 62, SSD1306_WHITE);
         display.drawPixel(55, 62, SSD1306_WHITE);
@@ -272,7 +232,7 @@ void render(float lightLevel, bool debugMode, uint8_t errorCodes) {
         display.drawPixel(127 - 53, 62, SSD1306_WHITE);
       }
 
-      if (brains.outputs[1] >= 1/3.0f) {
+      if (brains.outputs[1] >= NN_EMOTION_HAPPY_VALUE) {
         display.drawPixel(52, 61, SSD1306_WHITE);
         display.drawPixel(53, 61, SSD1306_WHITE);
         display.drawPixel(127 - 53, 61, SSD1306_WHITE);
@@ -288,7 +248,7 @@ void render(float lightLevel, bool debugMode, uint8_t errorCodes) {
       }
 
       // ****** Eyes ******
-      if (brains.outputs[0] >= 0.5) {
+      if (brains.outputs[0] >= NN_EYES_OPEN_VALUE) {
         display.drawCircle(32, 28, 28, SSD1306_WHITE);
         display.drawCircle(127 - 32, 28, 28, SSD1306_WHITE);
         display.fillCircle(32 + x, 28 + y, 6, SSD1306_WHITE);
