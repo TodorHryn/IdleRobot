@@ -2,35 +2,34 @@
 #include <LowPower.h>
 #include <EEPROM.h>
 #include "CircularVector.hpp"
-#include "SmallFloat.h"
-#include "SmallNN.h"
+#include "SmallFloat.hpp"
+#include "SmallNN.hpp"
 
-#define LIGHT_SENSOR_PIN A6
-#define BATTERY_PIN A3
-#define DEBUG_PIN 2
-#define LED_PIN 4
-#define TURN_OFF_CHARGE 0.2f
-#define TURN_ON_CHARGE 0.4f
+constexpr uint8_t LIGHT_SENSOR_PIN = A6;
+constexpr uint8_t BATTERY_PIN = A3;
+constexpr uint8_t DEBUG_PIN = 2;
+constexpr uint8_t LED_PIN = 4;
+constexpr uint32_t EEPROM_SETTINGS_KEY = 0x97031dc2;
 
-#define NN_EMOTION_OK_VALUE -1/3.0f
-#define NN_EMOTION_HAPPY_VALUE 1/3.0f
-#define NN_EYES_OPEN_VALUE 0.5f
-
-#define ADC_REF_VOLTAGE 4.34f
-#define BATTERY_VOLTAGE_0 3.4f
-#define BATTERY_VOLTAGE_1 4.2f
-
-#define ERR_NO_BATTERY_VOLTAGE_READING  0x01
-
-const uint32_t EEPROM_SETTINGS_KEY = 0x5acc0dd1;
+constexpr uint8_t ERR_NO_BATTERY_VOLTAGE_READING = 0x01;
+constexpr uint32_t CYCLES_IN_HOUR = 450;
+constexpr uint32_t CYCLES_PER_BRAIN_UPDATE = 10;
+constexpr float TURN_OFF_CHARGE = 0.2;
+constexpr float TURN_ON_CHARGE = 0.4;
+constexpr float ADC_REF_VOLTAGE = 4.34;
+constexpr float BATTERY_VOLTAGE_0 = 3.4;
+constexpr float BATTERY_VOLTAGE_1 = 4.2;
+constexpr float NN_EMOTION_OK_VALUE = -1 / 3.0;
+constexpr float NN_EMOTION_HAPPY_VALUE = 1 / 3.0;
+constexpr float NN_EYES_OPEN_VALUE = 0.5;
 
 Adafruit_SSD1306 display(128, 64, &Wire, -1);
 
 uint8_t brainsBin[] =  {41, 168, 152, 192, 30, 137, 23, 64, 131, 191, 207, 29, 254, 127, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 154, 145, 198, 1, 0, 0, 0, 0, 250, 75, 247, 127, 0, 0, 0, 176, 2, 0, 0, 0, 0, 0, 172, 86, 51, 168, 173, 186, 0, 8, 55, 122, 193, 153, 138, 173, 146, 73, 102, 130, 220, 117, 140, 125, 136, 146, 145, 231, 147, 173, 171, 158, 195, 170, 178, 143, 121, 143, 255, 157, 226, 187, 118, 161, 185, 177, 152, 0, 100, 0};
 SmallNN<2, 7, 3> &brains = *((SmallNN<2, 7, 3>*) brainsBin);
 
-float x = 0, y = 0;
-float dirX = 1, dirY = 0.5;
+float eyesX = 0, eyesY = 0;
+float eyesDirX = 1, eyesDirY = 0.5;
 uint32_t cycles = 0;
 uint32_t cyclesTotal = 0;
 bool energySaving = false;
@@ -41,6 +40,7 @@ CircularVector<SmallFloat<0, 1>> hourChargeLevel(48);
 float prevDayAvgCharge = 0;
 float currDayAvgCharge = 0;
 bool prevDebugOn = false;
+bool updateBrain = true;
 
 template<uint16_t FROM, uint16_t TO>
 float average(const CircularVector<SmallFloat<FROM, TO>> &v) {
@@ -143,6 +143,87 @@ float mapf(float val, float fromLow, float fromHigh, float toLow, float toHigh) 
   return min(toHigh, max(toLow, ret));
 }
 
+inline void drawEyesOpen() {
+  display.drawCircle(32, 28, 26, SSD1306_WHITE);
+  display.drawCircle(97, 28, 26, SSD1306_WHITE);
+  display.fillCircle(32 + eyesX, 28 + eyesY, 6, SSD1306_WHITE);
+  display.fillCircle(97 + eyesX, 28 + eyesY, 6, SSD1306_WHITE);
+}
+
+inline void drawEyesOpenHappy() {
+  for (uint8_t i = 0; i < 18; ++i) {
+    display.drawPixel(32 + i, 11 + i, SSD1306_WHITE);
+    display.drawPixel(32 - i, 11 + i, SSD1306_WHITE);
+    display.drawPixel(97 + i, 11 + i, SSD1306_WHITE);
+    display.drawPixel(97 - i, 11 + i, SSD1306_WHITE);
+  }
+}
+
+inline void drawEyesClosed() {
+  display.drawFastHLine(18, 28, 29, SSD1306_WHITE);
+  display.drawFastHLine(83, 28, 29, SSD1306_WHITE);
+}
+
+inline void drawMouthSad() {
+  display.drawFastHLine(54, 63, 22, SSD1306_WHITE);
+}
+
+inline void drawMouthOk() {
+  display.drawFastHLine(54, 63, 22, SSD1306_WHITE);
+  display.drawFastHLine(53, 62, 2, SSD1306_WHITE);
+  display.drawFastHLine(75, 62, 2, SSD1306_WHITE);
+  display.drawFastHLine(52, 61, 2, SSD1306_WHITE);
+  display.drawFastHLine(76, 61, 2, SSD1306_WHITE);
+}
+
+inline void drawMouthHappy() {
+  display.drawFastHLine(54, 63, 22, SSD1306_WHITE);
+  display.drawFastHLine(51, 62, 4, SSD1306_WHITE);
+  display.drawFastHLine(75, 62, 4, SSD1306_WHITE);
+  display.drawFastHLine(50, 61, 2, SSD1306_WHITE);
+  display.drawFastHLine(78, 61, 2, SSD1306_WHITE);
+  display.drawFastHLine(49, 60, 2, SSD1306_WHITE);
+  display.drawFastHLine(79, 60, 2, SSD1306_WHITE);
+  display.drawFastHLine(48, 59, 2, SSD1306_WHITE);
+  display.drawFastHLine(80, 59, 2, SSD1306_WHITE);
+}
+
+inline void drawDebug(float avgChargeLevel, float lightLevel, uint8_t errorCodes) {
+  display.print(F("Cur. on: "));
+  display.print(String((cycles / CYCLES_IN_HOUR) / 24));
+  display.print(F(" d "));
+  display.print(String((cycles / CYCLES_IN_HOUR) % 24)); 
+  display.println(F(" h"));
+  
+  display.print(F("Tot. on: "));
+  display.print(String((cyclesTotal / CYCLES_IN_HOUR) / 24));
+  display.print(F(" d "));
+  display.print(String((cyclesTotal / CYCLES_IN_HOUR) % 24));
+  display.println(F(" h"));
+  
+  display.println(String(avgChargeLevel * 100) + "%");
+  
+  uint8_t pc = prevDayAvgCharge * 100;
+  uint8_t cc = currDayAvgCharge * 100;
+  display.print(F("YDA "));
+  display.print(String(pc));
+  display.print(F("% TDA "));
+  display.print(String(cc));
+  display.println(F("%"));
+  display.print(F("Light "));
+  display.println(lightLevel);
+  
+  display.print(F("E "));
+  display.print(String(brains.outputs[0]));
+  display.print(F(" H "));
+  display.print(String(brains.outputs[1]));
+  display.print(F(" B "));
+  display.println(String(brains.outputs[2]));
+  
+  if (errorCodes & ERR_NO_BATTERY_VOLTAGE_READING)
+    display.println(F("<ERR> Unknown batt. V"));
+}
+
 void render(float lightLevel, bool debugMode, uint8_t errorCodes) {
   float avgChargeLevel = average(chargeLevel);
 
@@ -152,6 +233,7 @@ void render(float lightLevel, bool debugMode, uint8_t errorCodes) {
   if (avgChargeLevel <= TURN_OFF_CHARGE && chargeLevel.size() >= 5) {
     energySaving = true;
     turnScreenOff = true;
+    updateBrain = true;
   }
   else if (avgChargeLevel >= TURN_ON_CHARGE && chargeLevel.size() >= 5) {
     energySaving = false;
@@ -180,96 +262,43 @@ void render(float lightLevel, bool debugMode, uint8_t errorCodes) {
     display.clearDisplay();
     display.setCursor(0, 0);
 
-    if (debugMode) {
-      display.print(F("Cur. on: "));
-      display.print(String((cycles / 450) / 24));
-      display.print(F(" d "));
-      display.print(String((cycles / 450) % 24)); 
-      display.println(F(" h"));
-      
-      display.print(F("Tot. on: "));
-      display.print(String((cyclesTotal / 450) / 24));
-      display.print(F(" d "));
-      display.print(String((cyclesTotal / 450) % 24));
-      display.println(F(" h"));
-      
-      display.println(String(avgChargeLevel * 100) + "%");
-      
-      uint8_t pc = prevDayAvgCharge * 100;
-      uint8_t cc = currDayAvgCharge * 100;
-      display.print(F("YDA "));
-      display.print(String(pc));
-      display.print(F("% TDA "));
-      display.print(String(cc));
-      display.println(F("%"));
-      display.print(F("Light "));
-      display.println(lightLevel);
-
-      display.print(F("E "));
-      display.print(String(brains.outputs[0]));
-      display.print(F(" H "));
-      display.print(String(brains.outputs[1]));
-      display.print(F(" B "));
-      display.println(String(brains.outputs[2]));
-
-      if (errorCodes & ERR_NO_BATTERY_VOLTAGE_READING)
-        display.println(F("<ERR> Unknown batt. V"));
-    }
+    if (debugMode) 
+      drawDebug(avgChargeLevel, lightLevel, errorCodes);
     else {
-      brains.inputs[0] = lightLevel;
-      brains.inputs[1] = constrain((currDayAvgCharge - prevDayAvgCharge) * 100, -1.0f, 1.0f);
-      brains.run();
+      if (updateBrain || cycles % CYCLES_PER_BRAIN_UPDATE == 0) {
+        brains.inputs[0] = lightLevel;
+        brains.inputs[1] = constrain((currDayAvgCharge - prevDayAvgCharge) * 100, -1.0f, 1.0f);
+        brains.run();
+        updateBrain = false;
+      }
       
-      // ***** Mouth *****
-      display.drawFastHLine(55, 63, 18, SSD1306_WHITE);
+      if (brains.outputs[1] >= NN_EMOTION_HAPPY_VALUE)
+        drawMouthHappy();
+      else if (brains.outputs[1] >= NN_EMOTION_OK_VALUE)
+        drawMouthOk();
+      else
+        drawMouthSad();
 
-      if (brains.outputs[1] >= NN_EMOTION_OK_VALUE) {
-        display.drawPixel(53, 62, SSD1306_WHITE);
-        display.drawPixel(54, 62, SSD1306_WHITE);
-        display.drawPixel(55, 62, SSD1306_WHITE);
-        display.drawPixel(127 - 55, 62, SSD1306_WHITE);
-        display.drawPixel(127 - 54, 62, SSD1306_WHITE);
-        display.drawPixel(127 - 53, 62, SSD1306_WHITE);
-      }
-
-      if (brains.outputs[1] >= NN_EMOTION_HAPPY_VALUE) {
-        display.drawPixel(52, 61, SSD1306_WHITE);
-        display.drawPixel(53, 61, SSD1306_WHITE);
-        display.drawPixel(127 - 53, 61, SSD1306_WHITE);
-        display.drawPixel(127 - 52, 61, SSD1306_WHITE);
-        display.drawPixel(51, 60, SSD1306_WHITE);
-        display.drawPixel(52, 60, SSD1306_WHITE);
-        display.drawPixel(127 - 52, 60, SSD1306_WHITE);
-        display.drawPixel(127 - 51, 60, SSD1306_WHITE);
-        display.drawPixel(50, 59, SSD1306_WHITE);
-        display.drawPixel(51, 59, SSD1306_WHITE);
-        display.drawPixel(127 - 51, 59, SSD1306_WHITE);
-        display.drawPixel(127 - 50, 59, SSD1306_WHITE);
-      }
-
-      // ****** Eyes ******
       if (brains.outputs[0] >= NN_EYES_OPEN_VALUE) {
-        display.drawCircle(32, 28, 28, SSD1306_WHITE);
-        display.drawCircle(127 - 32, 28, 28, SSD1306_WHITE);
-        display.fillCircle(32 + x, 28 + y, 6, SSD1306_WHITE);
-        display.fillCircle(127 - 32 + x, 28 + y, 6, SSD1306_WHITE);
+        if (brains.outputs[1] >= NN_EMOTION_HAPPY_VALUE && cyclesTotal % CYCLES_IN_HOUR <= (CYCLES_IN_HOUR >> 4))
+          drawEyesOpenHappy();
+        else
+          drawEyesOpen();
       }
-      else {
-        display.drawFastHLine(32 - 14, 28, 28, SSD1306_WHITE);
-        display.drawFastHLine(127 - 32 - 14, 28, 28, SSD1306_WHITE);
-      }
+      else
+        drawEyesClosed();
 
       //where eyes look at
-      x += dirX;
-      y += dirY;
-      if (x >= 10)
-        dirX = -random(0, 100) / 100.0;
-      else if (x <= -10)
-        dirX = random(0, 100) / 100.0;
-      if (y >= 10)
-        dirY = -random(0, 100) / 100.0;
-      else if (y <= -10)
-        dirY = random(0, 100) / 100.0;
+      eyesX += eyesDirX;
+      eyesY += eyesDirY;
+      if (eyesX >= 10)
+        eyesDirX = -random(0, 100) / 100.0;
+      else if (eyesX <= -10)
+        eyesDirX = random(0, 100) / 100.0;
+      if (eyesY >= 10)
+        eyesDirY = -random(0, 100) / 100.0;
+      else if (eyesY <= -10)
+        eyesDirY = random(0, 100) / 100.0;
     }
 
     setScreenBrightness(constrain(brains.outputs[2], 0, 1));
@@ -309,7 +338,7 @@ void loop() {
   }
   else
     errorCodes = errorCodes | ERR_NO_BATTERY_VOLTAGE_READING;
-  if (cyclesTotal % 450 == 0) {
+  if (cyclesTotal % CYCLES_IN_HOUR == 0) {
     hourChargeLevel.push(average(chargeLevel));
     updateAvgCharge();
   }
@@ -327,7 +356,7 @@ void loop() {
 
   cycles++;
   cyclesTotal++;
-  if (cyclesTotal % 100 == 0)
+  if (cyclesTotal % CYCLES_IN_HOUR == 0)
     saveSettings();
 
   LowPower.powerDown(SLEEP_8S, ADC_OFF, BOD_ON);
